@@ -9,7 +9,9 @@ import "./index.css";
 import Home from "./pages/Home";
 import VirtualProfessor from "./pages/VirtualProfessor";
 import ConceptVisualizer from "./pages/Conceptvisualizer";
-import Signin from "./components/Auth/Signin";
+import Signin from "./components/Auth/Signup";
+import Login from "./components/Auth/login";
+import Signup from "./components/Auth/Signup";
 
 
 const router = createBrowserRouter([
@@ -44,8 +46,12 @@ const router = createBrowserRouter([
     ],
   },
   {
-    path: "/signin",
-    element: <Signin />, 
+    path: "/signup",
+    element: <Signup/>, 
+  },
+  {
+    path: "/login",
+    element: <Login />, 
   },
 ]);
 
