@@ -1,0 +1,8 @@
+{
+    "rewrites": [
+      { "source": "/concept-visualizer", "destination": "/index.html" },
+      { "source": "/virtual-professor", "destination": "/index.html" },
+      { "source": "/(.*)", "destination": "/index.html" }
+    ]
+  }
+  

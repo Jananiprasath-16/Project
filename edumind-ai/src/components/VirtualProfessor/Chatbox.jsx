@@ -56,7 +56,7 @@ const ChatbotSection = () => {
       if (input) formData.append('message', input);
       if (file) formData.append('file', file);
 
-      const response = await fetch('http://localhost:8000/gemini', {
+      const response = await fetch('https://project-iiij.onrender.com/gemini', {
 
         method: 'POST',
         body: formData,

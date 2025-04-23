@@ -142,7 +142,7 @@ export default function MindMapGenerator() {
         formData.append('file', file);
       }
 
-      const response = await fetch('http://localhost:8000/generate-mindmap', {
+      const response = await fetch('https://project-iiij.onrender.com/generate-mindmap', {
         method: 'POST',
         body: formData,
       });
