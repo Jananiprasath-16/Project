@@ -1,334 +1,320 @@
-import React, { useState, useEffect, useRef } from 'react';
-import * as d3 from 'd3';
-import { toPng } from 'html-to-image';
+import { useState } from 'react';
+import { Map, Upload, Loader } from 'lucide-react';
+import Tree from 'react-d3-tree';
 
-// Mock function for initial testing (to be replaced by API response)
-const generateMockMindMapData = (concept) => {
-  return {
-    name: concept || 'Core Concept',
-    children: [
-      { name: 'Sub-Concept 1', children: [{ name: 'Detail 1' }, { name: 'Detail 2' }] },
-      { name: 'Sub-Concept 2', children: [{ name: 'Detail 3' }] },
-      { name: 'Sub-Concept 3', children: [{ name: 'Detail 4' }, { name: 'Detail 5' }] },
-    ],
-  };
+// Custom node component for the mind map with dynamic circle size
+const CustomNode = ({ nodeDatum, toggleNode }) => {
+  // Calculate circle radius based on text length
+  const baseRadius = 20;
+  const textLength = nodeDatum.name.length;
+  const dynamicRadius = baseRadius + Math.min(textLength * 15, 35); // Increase radius with text length, max +30px
+  
+  // For very long text, handle it better by wrapping
+  const isLongText = textLength > 15;
+  
+  return (
+    <g onClick={toggleNode}>
+      <circle 
+        r={dynamicRadius} 
+        fill="#ADD8E6" 
+        strokeWidth={1}
+        stroke="#4f46e5"
+      />
+      
+      {isLongText ? (
+        // For longer text, break into multiple lines
+        <text
+          fill="black"
+          textAnchor="middle"
+          style={{ pointerEvents: 'none', fontSize: '11px', fontWeight: '500' }}
+        >
+          {nodeDatum.name.split(' ').reduce((lines, word, i, arr) => {
+            if (i === 0) return [[word]];
+            const lastLineIndex = lines.length - 1;
+            const currentLine = lines[lastLineIndex].join(' ');
+            
+            if ((currentLine + ' ' + word).length < 15 || (i === arr.length - 1 && lines.length === 1)) {
+              lines[lastLineIndex].push(word);
+            } else {
+              lines.push([word]);
+            }
+            return lines;
+          }, [[]]).map((line, i, arr) => (
+            <tspan 
+              key={i} 
+              x="0" 
+              dy={i === 0 ? `-${(arr.length - 1) * 0.6}em` : '1.2em'}
+            >
+              {line.join(' ')}
+            </tspan>
+          ))}
+        </text>
+      ) : (
+        // For shorter text, keep it simple
+        <text
+          fill="black"
+          strokeWidth="0.3"
+          textAnchor="middle"
+          dy=".3em"
+          style={{ pointerEvents: 'none', fontSize: '12px', fontWeight: '500' }}
+        >
+          {nodeDatum.name}
+        </text>
+      )}
+      
+      {nodeDatum.attributes && Object.entries(nodeDatum.attributes).length > 0 && (
+        <text fill="black" x={dynamicRadius + 10} dy="0em" style={{ fontSize: '10px' }}>
+          {Object.entries(nodeDatum.attributes).map(([key, value], i) => (
+            <tspan key={i} dy="1.2em" x={dynamicRadius + 10}>
+              {`${key}: ${value}`}
+            </tspan>
+          ))}
+        </text>
+      )}
+    </g>
+  );
 };
 
-const MindMap = () => {
+export default function MindMapGenerator() {
   const [concept, setConcept] = useState('');
+  const [file, setFile] = useState(null);
+  const [fileName, setFileName] = useState('');
   const [mindMapData, setMindMapData] = useState(null);
-  const [isRecording, setIsRecording] = useState(false);
-  const [selectedFile, setSelectedFile] = useState(null);
-  const svgRef = useRef(null);
-  const containerRef = useRef(null);
-  const fileInputRef = useRef(null);
-  const recognitionRef = useRef(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [treeTranslate, setTreeTranslate] = useState({ x: 300, y: 50 });
 
-  useEffect(() => {
-    // Initialize Web Speech API
-    if ('webkitSpeechRecognition' in window) {
-      recognitionRef.current = new window.webkitSpeechRecognition();
-      recognitionRef.current.continuous = false;
-      recognitionRef.current.interimResults = false;
-      recognitionRef.current.onresult = (event) => {
-        const transcript = event.results[0][0].transcript;
-        setConcept(transcript);
-        setIsRecording(false);
-        handleSubmit(null, transcript);
+  // Function to transform the API response into a format compatible with react-d3-tree
+  const transformDataForTree = (data) => {
+    // Check if the data follows the expected structure from the backend
+    if (data && data.central && data.branches) {
+      // Transform from backend format to react-d3-tree format
+      return {
+        name: data.central,
+        children: data.branches.map(branch => ({
+          name: branch.name,
+          children: Array.isArray(branch.children) 
+            ? branch.children.map(child => transformNodeRecursive(child))
+            : []
+        }))
       };
-      recognitionRef.current.onend = () => {
-        setIsRecording(false);
+    } else {
+      // If the data doesn't match expected format, return simple error tree
+      return {
+        name: "Invalid Data Format",
+        children: [
+          { 
+            name: "Check Console", 
+            children: [] 
+          }
+        ]
       };
     }
+  };
 
-    // Render mind map
-    if (!mindMapData || !svgRef.current) return;
+  // Helper function for recursive transformation
+  const transformNodeRecursive = (node) => {
+    return {
+      name: node.name || "Unnamed",
+      children: Array.isArray(node.children) 
+        ? node.children.map(child => transformNodeRecursive(child))
+        : []
+    };
+  };
 
-    const svg = d3.select(svgRef.current);
-    svg.selectAll('*').remove();
+  const handleFileChange = (e) => {
+    const selectedFile = e.target.files[0];
+    if (selectedFile) {
+      setFile(selectedFile);
+      setFileName(selectedFile.name);
+    }
+  };
 
-    const width = 900;
-    const height = 800;
-
-    svg.attr('width', width).attr('height', height);
-
-    const treeLayout = d3.tree().size([width - 200, height - 200]);
-    const root = d3.hierarchy(mindMapData);
-    treeLayout(root);
-
-    const g = svg.append('g').attr('transform', 'translate(100, 100)');
-
-    const color = d3.scaleOrdinal(['#3B82F6', '#60A5FA', '#93C5FD']);
-
-    const linkGradient = svg
-      .append('defs')
-      .append('linearGradient')
-      .attr('id', 'link-gradient')
-      .attr('x1', '0%')
-      .attr('y1', '0%')
-      .attr('x2', '100%')
-      .attr('y2', '0%');
-    linkGradient.append('stop').attr('offset', '0%').attr('stop-color', '#BFDBFE');
-    linkGradient.append('stop').attr('offset', '100%').attr('stop-color', '#3B82F6');
-
-    g.selectAll('.link')
-      .data(root.links())
-      .enter()
-      .append('path')
-      .attr('class', 'link')
-      .attr('d', d3.linkVertical().x((d) => d.x).y((d) => d.y))
-      .attr('fill', 'none')
-      .attr('stroke', 'url(#link-gradient)')
-      .attr('stroke-width', 3)
-      .attr('stroke-opacity', 0.8)
-      .style('transition', 'stroke-opacity 0.3s ease')
-      .on('mouseover', function () {
-        d3.select(this).attr('stroke-opacity', 1);
-      })
-      .on('mouseout', function () {
-        d3.select(this).attr('stroke-opacity', 0.8);
-      });
-
-    const nodes = g.selectAll('.node')
-      .data(root.descendants())
-      .enter()
-      .append('g')
-      .attr('class', 'node')
-      .attr('transform', (d) => `translate(${d.x},${d.y})`);
-
-    nodes
-      .append('rect')
-      .attr('width', (d) => (d.data.name.length * 10) + 30)
-      .attr('height', 40)
-      .attr('x', (d) => -(d.data.name.length * 5 + 15))
-      .attr('y', -20)
-      .attr('rx', 10)
-      .attr('fill', (d) => color(d.depth))
-      .attr('stroke', '#ffffff')
-      .attr('stroke-width', 2)
-      .style('filter', 'url(#glassmorphic-shadow)')
-      .style('cursor', 'pointer')
-      .on('mouseover', function () {
-        d3.select(this).transition().duration(200).attr('y', -24).attr('height', 48);
-      })
-      .on('mouseout', function () {
-        d3.select(this).transition().duration(200).attr('y', -20).attr('height', 40);
-      });
-
-    const defs = svg.append('defs');
-    const filter = defs.append('filter').attr('id', 'glassmorphic-shadow');
-    filter
-      .append('feGaussianBlur')
-      .attr('in', 'SourceAlpha')
-      .attr('stdDeviation', 4)
-      .attr('result', 'blur');
-    filter
-      .append('feOffset')
-      .attr('in', 'blur')
-      .attr('dx', 2)
-      .attr('dy', 2)
-      .attr('result', 'offsetBlur');
-    filter
-      .append('feComponentTransfer')
-      .append('feFuncA')
-      .attr('type', 'linear')
-      .attr('slope', 0.2);
-    const merge = filter.append('feMerge');
-    merge.append('feMergeNode');
-    merge.append('feMergeNode').attr('in', 'SourceGraphic');
-
-    nodes
-      .append('text')
-      .attr('dy', 5)
-      .attr('text-anchor', 'middle')
-      .attr('fill', '#ffffff')
-      .attr('font-size', '14px')
-      .attr('font-weight', '600')
-      .attr('font-family', 'Inter, sans-serif')
-      .text((d) => d.data.name)
-      .style('text-shadow', '0 1px 2px rgba(0, 0, 0, 0.3)')
-      .style('pointer-events', 'none');
-  }, [mindMapData]);
-
-  const handleSubmit = async (e, input = concept, file = selectedFile) => {
-    if (e) e.preventDefault();
-    if (!input.trim() && !file) return;
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
 
     try {
       const formData = new FormData();
-      if (input) formData.append('concept', input);
-      if (file) formData.append('file', file);
+      formData.append('concept', concept);
+      if (file) {
+        formData.append('file', file);
+      }
 
-      const response = await fetch('http://localhost:8000/mindmap', {
+      const response = await fetch('http://localhost:8000/generate-mindmap', {
         method: 'POST',
         body: formData,
       });
 
-      if (!response.ok) throw new Error('API request failed');
+      if (!response.ok) {
+        throw new Error('Failed to generate mind map');
+      }
 
       const data = await response.json();
+      console.log("Mind map data from backend:", data);
       setMindMapData(data);
-    } catch (error) {
-      console.error('Error fetching mind map data:', error);
-      // Fallback to mock data
-      const mockData = generateMockMindMapData(input || (file ? file.name : 'Uploaded Content'));
-      setMindMapData(mockData);
+      
+      // Calculate optimal initial position based on data complexity
+      const branches = data?.branches?.length || 3;
+      const avgSubBranches = data?.branches?.reduce((sum, branch) => sum + (branch.children?.length || 0), 0) / branches || 2;
+      
+      // Adjust initial position based on the complexity
+      setTreeTranslate({ 
+        x: Math.max(window.innerWidth / 3, 300),
+        y: 50 + (avgSubBranches > 3 ? 50 : 0)
+      });
+      
+    } catch (err) {
+      setError(err.message || 'An error occurred while generating the mind map');
+      console.error("Error generating mind map:", err);
     } finally {
-      setConcept('');
-      setSelectedFile(null);
+      setLoading(false);
     }
   };
 
-  const handleVoiceInput = () => {
-    if (!recognitionRef.current) {
-      alert('Voice input is not supported in this browser.');
-      return;
-    }
-
-    if (isRecording) {
-      recognitionRef.current.stop();
-    } else {
-      setIsRecording(true);
-      recognitionRef.current.start();
-    }
-  };
-
-  const handleFileUpload = (e) => {
-    const file = e.target.files[0];
-    if (file && (file.type.includes('pdf') || file.type.includes('image'))) {
-      setSelectedFile(file);
-      handleSubmit(null, '', file);
-    } else {
-      alert('Please upload a PDF or image file.');
-    }
-    e.target.value = null;
-  };
-
-  const copyImage = async () => {
-    if (svgRef.current) {
-      try {
-        const dataUrl = await toPng(svgRef.current, { pixelRatio: 2 });
-        const img = new Image();
-        img.src = dataUrl;
-        const canvas = document.createElement('canvas');
-        canvas.width = img.width;
-        canvas.height = img.height;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(img, 0, 0);
-        canvas.toBlob((blob) => {
-          navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-          alert('Mind map copied to clipboard!');
-        });
-      } catch (err) {
-        console.error('Failed to copy image:', err);
-        alert('Failed to copy mind map.');
+  const resetZoom = () => {
+    const treeWrapper = document.getElementById('treeWrapper');
+    if (treeWrapper) {
+      const svg = treeWrapper.querySelector('svg');
+      if (svg) {
+        svg.setAttribute('transform', 'translate(0,0) scale(1)');
       }
     }
   };
 
   return (
-    <section className="min-h-screen bg-gradient-to-br from-white via-blue-50 to-blue-100 flex flex-col items-center justify-center p-8 relative overflow-hidden">
-      {/* Background Particles */}
-      <div className="absolute inset-0 pointer-events-none">
-        <div className="absolute top-0 left-0 w-80 h-80 bg-blue-300/20 rounded-full blur-3xl animate-float"></div>
-        <div className="absolute bottom-0 right-0 w-96 h-96 bg-blue-400/20 rounded-full blur-3xl animate-float-delayed"></div>
+    <div className="max-w-6xl mx-auto p-6">
+      <div className="bg-gradient-to-r mt-16 from-purple-700 to-blue-500 rounded-lg shadow-lg p-8 mb-8">
+        <h1 className="text-3xl font-bold text-white mb-2 flex items-center">
+          <Map className="mr-3" size={28} />
+          Mind Map Generator
+        </h1>
+        <p className="text-white text-opacity-90">
+          Enter a concept or upload a file to generate a structured mind map
+        </p>
       </div>
 
-      <div className="max-w-5xl w-full bg-white/90 backdrop-blur-xl rounded-3xl shadow-[0_8px_32px_rgba(0,50,100,0.15)] p-8 border border-blue-200/50 animate-scale-in">
-        <h1 className="text-4xl mt-16 font-extrabold text-blue-900 mb-4 text-center tracking-tight animate-slide-in-down">
-          Concept Visualizer
-        </h1>
-        <p className="text-blue-600 mb-8 text-center text-lg max-w-xl mx-auto animate-slide-in-up">
-          Transform ideas into stunning flowchart-style mind maps using text, voice, documents, or images.
-        </p>
-
-        <div className="mb-8">
-          <form onSubmit={handleSubmit} className="flex flex-col sm:flex-row gap-3 justify-center items-center">
-            <input
-              type="text"
+      <div className="bg-white rounded-lg shadow-lg p-6 mb-8">
+        <form onSubmit={handleSubmit} className="space-y-6">
+          <div>
+            <label htmlFor="concept" className="block text-sm font-medium text-gray-700 mb-1">
+              Concept or Topic
+            </label>
+            <textarea
+              id="concept"
               value={concept}
               onChange={(e) => setConcept(e.target.value)}
-              placeholder="Enter a concept (e.g., Artificial Intelligence)"
-              className="flex-1 p-4 bg-white/50 text-blue-900 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white/70 transition-all duration-300 placeholder-blue-400/70 border border-blue-200/50 shadow-inner"
+              placeholder="Enter your concept, topic or text to analyze..."
+              className="w-full px-4 py-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              rows={4}
+              required={!file}
             />
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={handleVoiceInput}
-                className={`p-4 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white rounded-xl shadow-lg transform hover:scale-105 transition-all duration-300 ${
-                  isRecording ? 'animate-pulse' : ''
-                }`}
-              >
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                onClick={() => fileInputRef.current.click()}
-                className="p-4 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white rounded-xl shadow-lg transform hover:scale-105 transition-all duration-300"
-              >
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
-                </svg>
-              </button>
-              <input
-                type="file"
-                ref={fileInputRef}
-                onChange={handleFileUpload}
-                accept=".pdf,image/*"
-                className="hidden"
-              />
-              <button
-                type="submit"
-                className="p-4 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white rounded-xl font-semibold shadow-lg hover:shadow-blue-500/40 transform hover:scale-105 transition-all duration-300"
-              >
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-                </svg>
-              </button>
-            </div>
-          </form>
-        </div>
-
-        <div className="flex flex-col items-center">
-          <div
-            ref={containerRef}
-            className="bg-white/95 rounded-xl border border-blue-200/50 p-4 shadow-lg w-full overflow-auto"
-            style={{ maxHeight: '500px', width: '100%' }}
-          >
-            <svg
-              ref={svgRef}
-              className="text-blue-900"
-              style={{ minHeight: '800px', width: '100%' }}
-            ></svg>
           </div>
-          {mindMapData && (
+
+          <div className="pt-2">
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Or Upload a File (Optional)
+            </label>
+            <div className="border-2 border-dashed border-gray-300 rounded-md p-6 text-center">
+              <div className="space-y-2">
+                <div className="flex justify-center">
+                  <Upload className="text-gray-400" size={24} />
+                </div>
+                <p className="text-sm text-gray-500">
+                  {fileName || 'PDF, TXT, or image files'}
+                </p>
+                <label className="cursor-pointer">
+                  <span className="mt-2 block text-sm font-medium text-blue-600">
+                    Browse files
+                  </span>
+                  <input
+                    type="file"
+                    className="hidden"
+                    onChange={handleFileChange}
+                    accept=".pdf,.txt,.png,.jpg,.jpeg"
+                  />
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <div>
             <button
-              onClick={copyImage}
-              className="mt-4 px-6 py-3 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white rounded-xl font-semibold shadow-lg hover:shadow-blue-500/40 transform hover:scale-105 transition-all duration-300"
+              type="submit"
+              disabled={loading || (!concept && !file)}
+              className={`w-full flex justify-center items-center py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white ${
+                loading || (!concept && !file)
+                  ? 'bg-gray-400 cursor-not-allowed'
+                  : 'bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500'
+              }`}
             >
-              Copy Mind Map Image
+              {loading ? (
+                <>
+                  <Loader className="animate-spin mr-2" size={18} />
+                  Generating...
+                </>
+              ) : (
+                <>
+                  <Map className="mr-2" size={18} />
+                  Generate Mind Map
+                </>
+              )}
             </button>
+          </div>
+
+          {error && (
+            <div className="p-3 bg-red-50 border border-red-200 rounded-md">
+              <p className="text-sm text-red-600">{error}</p>
+            </div>
           )}
-        </div>
+        </form>
       </div>
 
-      {/* Custom Animations */}
-      <style jsx>{`
-        @keyframes slide-in-down { 0% { opacity: 0; transform: translateY(-30px); } 100% { opacity: 1; transform: translateY(0); } }
-        @keyframes slide-in-up { 0% { opacity: 0; transform: translateY(30px); } 100% { opacity: 1; transform: translateY(0); } }
-        @keyframes scale-in { 0% { opacity: 0; transform: scale(0.95); } 100% { opacity: 1; transform: scale(1); } }
-        @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-20px); } }
-        @keyframes float-delayed { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-30px); } }
-        .animate-slide-in-down { animation: slide-in-down 0.8s ease-out; }
-        .animate-slide-in-up { animation: slide-in-up 0.8s ease-out 0.2s both; }
-        .animate-scale-in { animation: scale-in 0.8s ease-out 0.4s both; }
-        .animate-float { animation: float 6s ease-in-out infinite; }
-        .animate-float-delayed { animation: float-delayed 8s ease-in-out infinite; }
-      `}</style>
-    </section>
+      {mindMapData && (
+        <div className="bg-white rounded-lg shadow-lg p-6 mt-8">
+          <h2 className="text-xl font-bold mb-4 flex items-center">
+            <Map className="mr-2" size={20} />
+            Generated Mind Map: {mindMapData.central || "Mind Map"}
+          </h2>
+          
+          <div className="border border-gray-200 rounded-lg bg-gray-50" style={{ height: "600px" }}>
+            <div className="w-full h-full" id="treeWrapper">
+              <Tree 
+                data={transformDataForTree(mindMapData)}
+                orientation="vertical"
+                pathFunc="step"
+                collapsible={true}
+                renderCustomNodeElement={CustomNode}
+                translate={treeTranslate}
+                separation={{ siblings: 2.5, nonSiblings: 3 }}
+                zoomable={true}
+                draggable={true}
+                nodeSize={{ x: 200, y: 120 }}
+                pathClassFunc={() => 'text-gray-800 stroke-2'}
+              />
+            </div>
+          </div>
+          
+          <div className="mt-6 flex gap-4">
+            <button 
+              className="px-4 py-2 bg-blue-100 text-blue-700 rounded-md hover:bg-blue-200 transition"
+              onClick={resetZoom}
+            >
+              Reset Zoom
+            </button>
+            
+            <details className="flex-1">
+              <summary className="cursor-pointer text-blue-600 font-medium">View Raw Data</summary>
+              <div className="mt-2 border border-gray-200 rounded-lg p-4">
+                <pre className="whitespace-pre-wrap overflow-auto max-h-64 text-xs">
+                  {JSON.stringify(mindMapData, null, 2)}
+                </pre>
+              </div>
+            </details>
+          </div>
+        </div>
+      )}
+    </div>
   );
-};
-
-export default MindMap;
+}
