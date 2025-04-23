@@ -8,7 +8,7 @@ import App from "./App";
 import "./index.css";
 import Home from "./pages/Home";
 import VirtualProfessor from "./pages/VirtualProfessor";
-import ConceptVisualizer from "./pages/Conceptvisualizer";
+import ConceptVisualizer from "./pages/ConceptVisualizer";
 import Signin from "./components/Auth/Signup";
 import Login from "./components/Auth/login";
 import Signup from "./components/Auth/Signup";
